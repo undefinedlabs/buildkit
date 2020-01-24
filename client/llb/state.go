@@ -207,7 +207,6 @@ func (s State) Run(ro ...RunOption) ExecState {
 		o.SetRunOption(ei)
 	}
 	meta := Meta{
-		ScopeVar:   getScopeVar(ei.State),
 		Args:       getArgs(ei.State),
 		Cwd:        getDir(ei.State),
 		Env:        getEnv(ei.State),
@@ -277,10 +276,6 @@ func (s State) Reset(s2 State) State {
 
 func (s State) User(v string) State {
 	return user(v)(s)
-}
-
-func (s State) ScopeVar(v string) State {
-	return scopeVar(v)(s)
 }
 
 func (s State) Platform(p specs.Platform) State {
