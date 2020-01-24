@@ -57,6 +57,15 @@ type mount struct {
 	noOutput     bool
 }
 
+type expose struct {
+	portMap *PortMap
+}
+
+type PortMap struct {
+	from int64
+	to   int64
+}
+
 type ExecOp struct {
 	MarshalCache
 	root        Output
@@ -363,6 +372,21 @@ func (e *ExecOp) getMountIndexFn(m *mount) func() (pb.OutputIndex, error) {
 type ExecState struct {
 	State
 	exec *ExecOp
+}
+
+func (e ExecState) Expose(source State, opt ...ExposeOption) State {
+	return e.State //TODO
+}
+
+type ExposeOption func(*expose)
+
+func PortMapping(from int64, to int64) ExposeOption {
+	return func(e *expose) {
+		e.portMap = &PortMap{
+			from: from,
+			to:   to,
+		}
+	}
 }
 
 func (e ExecState) AddMount(target string, source State, opt ...MountOption) State {
