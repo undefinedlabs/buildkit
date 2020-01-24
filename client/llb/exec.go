@@ -21,6 +21,7 @@ type Meta struct {
 	ExtraHosts []HostIP
 	Network    pb.NetMode
 	Security   pb.SecurityMode
+	ScopeVar   string
 }
 
 func NewExecOp(root Output, meta Meta, readOnly bool, c Constraints) *ExecOp {
@@ -155,10 +156,11 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 	}
 
 	meta := &pb.Meta{
-		Args: e.meta.Args,
-		Env:  e.meta.Env.ToArray(),
-		Cwd:  e.meta.Cwd,
-		User: e.meta.User,
+		ScopeVar: e.meta.ScopeVar,
+		Args:     e.meta.Args,
+		Env:      e.meta.Env.ToArray(),
+		Cwd:      e.meta.Cwd,
+		User:     e.meta.User,
 	}
 	if len(e.meta.ExtraHosts) > 0 {
 		hosts := make([]*pb.HostIP, len(e.meta.ExtraHosts))
