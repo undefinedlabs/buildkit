@@ -14,6 +14,7 @@ import (
 type contextKeyT string
 
 var (
+	keyScopeVar  = contextKeyT("llb.exec.scopevar")
 	keyArgs      = contextKeyT("llb.exec.args")
 	keyDir       = contextKeyT("llb.exec.dir")
 	keyEnv       = contextKeyT("llb.exec.env")
@@ -59,6 +60,12 @@ func user(str string) StateOption {
 	}
 }
 
+func scopeVar(str string) StateOption {
+	return func(s State) State {
+		return s.WithValue(keyScopeVar, str)
+	}
+}
+
 func reset(s_ State) StateOption {
 	return func(s State) State {
 		s = NewState(s.Output())
@@ -93,6 +100,14 @@ func getArgs(s State) []string {
 
 func getUser(s State) string {
 	v := s.Value(keyUser)
+	if v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+func getScopeVar(s State) string {
+	v := s.Value(keyScopeVar)
 	if v != nil {
 		return v.(string)
 	}

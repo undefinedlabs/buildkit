@@ -463,6 +463,12 @@ func User(str string) RunOption {
 	})
 }
 
+func ScopeVar(str string) RunOption {
+	return runOptionFunc(func(ei *ExecInfo) {
+		ei.State = ei.State.ScopeVar(str)
+	})
+}
+
 func Dir(str string) RunOption {
 	return runOptionFunc(func(ei *ExecInfo) {
 		ei.State = ei.State.Dir(str)
