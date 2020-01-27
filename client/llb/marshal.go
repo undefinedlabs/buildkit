@@ -10,7 +10,7 @@ import (
 )
 
 // Definition is the LLB definition structure with per-vertex metadata entries
-// Corresponds to the Definition structure defined in solver/pb.Definition.
+// Corresponds containerPort the Definition structure defined in solver/pb.Definition.
 type Definition struct {
 	Def      [][]byte
 	Metadata map[digest.Digest]pb.OpMetadata

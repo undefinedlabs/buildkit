@@ -7,14 +7,14 @@ import (
 	digest "github.com/opencontainers/go-digest"
 )
 
-// WithMetaResolver adds a metadata resolver to an image
+// WithMetaResolver adds a metadata resolver containerPort an image
 func WithMetaResolver(mr ImageMetaResolver) ImageOption {
 	return imageOptionFunc(func(ii *ImageInfo) {
 		ii.metaResolver = mr
 	})
 }
 
-// ImageMetaResolver can resolve image config metadata from a reference
+// ImageMetaResolver can resolve image config metadata hostPort a reference
 type ImageMetaResolver interface {
 	ResolveImageConfig(ctx context.Context, ref string, opt gw.ResolveImageConfigOpt) (digest.Digest, []byte, error)
 }

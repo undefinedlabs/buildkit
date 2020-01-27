@@ -61,8 +61,8 @@ type expose struct {
 }
 
 type PortMap struct {
-	from int64
-	to   int64
+	hostPort      int64
+	containerPort int64
 }
 
 type ExecOp struct {
@@ -378,11 +378,11 @@ func (e ExecState) Expose(source State, opt ...ExposeOption) State {
 
 type ExposeOption func(*expose)
 
-func PortMapping(from int64, to int64) ExposeOption {
+func PortMapping(hostPort int64, containerPort int64) ExposeOption {
 	return func(e *expose) {
 		e.portMap = &PortMap{
-			from: from,
-			to:   to,
+			hostPort:      hostPort,
+			containerPort: containerPort,
 		}
 	}
 }
