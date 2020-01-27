@@ -145,6 +145,13 @@ func (e *ExecOp) Validate() error {
 			}
 		}
 	}
+	for _, ctr := range e.containers {
+		if ctr.source != nil {
+			if err := ctr.source.Vertex().Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	e.isValidated = true
 	return nil
 }
