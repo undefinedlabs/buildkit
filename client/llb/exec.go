@@ -56,7 +56,9 @@ type mount struct {
 	noOutput     bool
 }
 
-type expose struct {
+type container struct {
+	source  Output
+	output  Output
 	portMap *PortMap
 }
 
@@ -74,6 +76,20 @@ type ExecOp struct {
 	isValidated bool
 	secrets     []SecretInfo
 	ssh         []SSHInfo
+	containers  []*container
+}
+
+func (e *ExecOp) Expose(source Output, opt ...ExposeOption) Output {
+	ctr := &container{
+		source: source,
+	}
+
+	for _, o := range opt {
+		o(ctr)
+	}
+
+	ctr.output = source
+	return ctr.output
 }
 
 func (e *ExecOp) AddMount(target string, source Output, opt ...MountOption) Output {
@@ -373,14 +389,14 @@ type ExecState struct {
 }
 
 func (e ExecState) Expose(source State, opt ...ExposeOption) State {
-	return e.State //TODO
+	return source.WithOutput(e.exec.Expose(source.Output(), opt...))
 }
 
-type ExposeOption func(*expose)
+type ExposeOption func(*container)
 
 func PortMapping(hostPort int64, containerPort int64) ExposeOption {
-	return func(e *expose) {
-		e.portMap = &PortMap{
+	return func(ctr *container) {
+		ctr.portMap = &PortMap{
 			hostPort:      hostPort,
 			containerPort: containerPort,
 		}
