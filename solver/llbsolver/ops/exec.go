@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/moby/buildkit/util/progress/logs"
+	utilsystem "github.com/moby/buildkit/util/system"
 
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/platforms"
@@ -31,8 +35,6 @@ import (
 	"github.com/moby/buildkit/solver"
 	"github.com/moby/buildkit/solver/llbsolver"
 	"github.com/moby/buildkit/solver/pb"
-	"github.com/moby/buildkit/util/progress/logs"
-	utilsystem "github.com/moby/buildkit/util/system"
 	"github.com/moby/buildkit/worker"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -47,16 +49,22 @@ import (
 const execCacheType = "buildkit.exec.v0"
 
 type execOp struct {
-	op        *pb.ExecOp
-	cm        cache.Manager
-	sm        *session.Manager
-	md        *metadata.Store
-	exec      executor.Executor
-	w         worker.Worker
-	platform  *pb.Platform
-	numInputs int
-
+	op          *pb.ExecOp
+	cm          cache.Manager
+	sm          *session.Manager
+	md          *metadata.Store
+	exec        executor.Executor
+	w           worker.Worker
+	platform    *pb.Platform
+	numInputs   int
 	cacheMounts map[string]*cacheRefShare
+
+	dependencies []*execOp
+	selfRef      string
+	stdout       io.WriteCloser
+	stderr       io.WriteCloser
+	outputs      []cache.Ref
+	refs         []cache.Ref
 }
 
 func NewExecOp(v solver.Vertex, op *pb.Op_Exec, platform *pb.Platform, cm cache.Manager, sm *session.Manager, md *metadata.Store, exec executor.Executor, w worker.Worker) (solver.Op, error) {
@@ -64,15 +72,16 @@ func NewExecOp(v solver.Vertex, op *pb.Op_Exec, platform *pb.Platform, cm cache.
 		return nil, err
 	}
 	return &execOp{
-		op:          op.Exec,
-		cm:          cm,
-		sm:          sm,
-		md:          md,
-		exec:        exec,
-		numInputs:   len(v.Inputs()),
-		w:           w,
-		platform:    platform,
-		cacheMounts: map[string]*cacheRefShare{},
+		op:           op.Exec,
+		cm:           cm,
+		sm:           sm,
+		md:           md,
+		exec:         exec,
+		numInputs:    len(v.Inputs()),
+		w:            w,
+		platform:     platform,
+		cacheMounts:  map[string]*cacheRefShare{},
+		dependencies: []*execOp{},
 	}, nil
 }
 
@@ -542,20 +551,10 @@ func addDefaultEnvvar(env []string, k, v string) []string {
 	return append(env, k+"="+v)
 }
 
-func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Result, error) {
+func (e *execOp) execStart(ctx context.Context, inputs []solver.Result) error {
 	var mounts []executor.Mount
 	var root cache.Mountable
 	var readonlyRootFS bool
-
-	var outputs []cache.Ref
-
-	defer func() {
-		for _, o := range outputs {
-			if o != nil {
-				go o.Release(context.TODO())
-			}
-		}
-	}()
 
 	// loop over all mounts, fill in mounts, root and outputs
 	for _, m := range e.op.Mounts {
@@ -563,18 +562,18 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 		var ref cache.ImmutableRef
 
 		if m.Dest == pb.RootMount && m.MountType != pb.MountType_BIND {
-			return nil, errors.Errorf("invalid mount type %s for %s", m.MountType.String(), m.Dest)
+			return errors.Errorf("invalid mount type %s for %s", m.MountType.String(), m.Dest)
 		}
 
 		// if mount is based on input validate and load it
 		if m.Input != pb.Empty {
 			if int(m.Input) > len(inputs) {
-				return nil, errors.Errorf("missing input %d", m.Input)
+				return errors.Errorf("missing input %d", m.Input)
 			}
 			inp := inputs[int(m.Input)]
 			workerRef, ok := inp.Sys().(*worker.WorkerRef)
 			if !ok {
-				return nil, errors.Errorf("invalid reference for exec %T", inp.Sys())
+				return errors.Errorf("invalid reference for exec %T", inp.Sys())
 			}
 			ref = workerRef.ImmutableRef
 			mountable = ref
@@ -591,40 +590,38 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 			if m.Output != pb.SkipOutput {
 				// it it is readonly and not root then output is the input
 				if m.Readonly && ref != nil && m.Dest != pb.RootMount {
-					outputs = append(outputs, ref.Clone())
+					e.outputs = append(e.outputs, ref.Clone())
 				} else {
 					// otherwise output and mount is the mutable child
 					active, err := makeMutable(ref)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					outputs = append(outputs, active)
+					e.outputs = append(e.outputs, active)
 					mountable = active
 				}
 			} else if (!m.Readonly || ref == nil) && m.Dest != pb.RootMount {
 				// this case is empty readonly scratch without output that is not really useful for anything but don't error
 				active, err := makeMutable(ref)
 				if err != nil {
-					return nil, err
+					return err
 				}
-				defer active.Release(context.TODO())
+				e.refs = append(e.refs, active)
 				mountable = active
 			}
 
 		case pb.MountType_CACHE:
 			if m.CacheOpt == nil {
-				return nil, errors.Errorf("missing cache mount options")
+				return errors.Errorf("missing cache mount options")
 			}
 			mRef, err := e.getRefCacheDir(ctx, ref, m.CacheOpt.ID, m, m.CacheOpt.Sharing)
 			if err != nil {
-				return nil, err
+				return err
 			}
+			e.refs = append(e.refs, mRef)
 			mountable = mRef
-			defer func() {
-				go mRef.Release(context.TODO())
-			}()
 			if m.Output != pb.SkipOutput && ref != nil {
-				outputs = append(outputs, ref.Clone())
+				e.outputs = append(e.outputs, ref.Clone())
 			}
 
 		case pb.MountType_TMPFS:
@@ -633,7 +630,7 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 		case pb.MountType_SECRET:
 			secretMount, err := e.getSecretMountable(ctx, m)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if secretMount == nil {
 				continue
@@ -643,7 +640,7 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 		case pb.MountType_SSH:
 			sshMount, err := e.getSSHMountable(ctx, m)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if sshMount == nil {
 				continue
@@ -651,12 +648,12 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 			mountable = sshMount
 
 		default:
-			return nil, errors.Errorf("mount type %s not implemented", m.MountType)
+			return errors.Errorf("mount type %s not implemented", m.MountType)
 		}
 
 		// validate that there is a mount
 		if mountable == nil {
-			return nil, errors.Errorf("mount %s has no input", m.Dest)
+			return errors.Errorf("mount %s has no input", m.Dest)
 		}
 
 		// if dest is root we need mutable ref even if there is no output
@@ -666,11 +663,9 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 			if m.Output == pb.SkipOutput && readonlyRootFS {
 				active, err := makeMutable(ref)
 				if err != nil {
-					return nil, err
+					return err
 				}
-				defer func() {
-					go active.Release(context.TODO())
-				}()
+				e.refs = append(e.refs, active)
 				root = active
 			}
 		} else {
@@ -685,7 +680,7 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 
 	extraHosts, err := parseExtraHosts(e.op.Meta.ExtraHosts)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	meta := executor.Meta{
@@ -704,16 +699,35 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 	}
 	meta.Env = addDefaultEnvvar(meta.Env, "PATH", utilsystem.DefaultPathEnv)
 
-	stdout, stderr := logs.NewLogStreams(ctx, os.Getenv("BUILDKIT_DEBUG_EXEC_OUTPUT") == "1")
-	defer stdout.Close()
-	defer stderr.Close()
+	e.stdout, e.stderr = logs.NewLogStreams(ctx, os.Getenv("BUILDKIT_DEBUG_EXEC_OUTPUT") == "1")
 
-	if err := e.exec.Exec(ctx, meta, root, mounts, nil, stdout, stderr); err != nil {
-		return nil, errors.Wrapf(err, "executor failed running %v", meta.Args)
+	if err := e.exec.Exec(ctx, meta, root, mounts, nil, e.stdout, e.stderr); err != nil {
+		return errors.Wrapf(err, "executor failed running %v", meta.Args)
 	}
 
+	return nil
+}
+
+func (e *execOp) execEnd(ctx context.Context) ([]solver.Result, error) {
+	defer func() {
+		for _, o := range e.outputs {
+			if o != nil {
+				go o.Release(context.TODO())
+			}
+		}
+
+		for _, r := range e.refs {
+			if r != nil {
+				go r.Release(context.TODO())
+			}
+		}
+	}()
+
+	defer e.stdout.Close()
+	defer e.stderr.Close()
+
 	refs := []solver.Result{}
-	for i, out := range outputs {
+	for i, out := range e.outputs {
 		if mutable, ok := out.(cache.MutableRef); ok {
 			ref, err := mutable.Commit(ctx)
 			if err != nil {
@@ -723,9 +737,38 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 		} else {
 			refs = append(refs, worker.NewWorkerRefResult(out.(cache.ImmutableRef), e.w))
 		}
-		outputs[i] = nil
+		e.outputs[i] = nil
 	}
 	return refs, nil
+}
+
+func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Result, error) {
+	//Setup dependencies
+	if e.dependencies != nil {
+		for _, dep := range e.dependencies {
+			var depResults []solver.Result
+			err := dep.execStart(ctx, depResults)
+			if err != nil {
+				return nil, err //TODO
+			}
+		}
+	}
+
+	//Exec Test
+	e.execStart(ctx, inputs)
+	refs, err := e.execEnd(ctx)
+
+	//Tear Down dependencies
+	if e.dependencies != nil {
+		for _, dep := range e.dependencies {
+			_, err := dep.execEnd(ctx) //TODO
+			if err != nil {
+				return nil, err // TODO
+			}
+		}
+	}
+
+	return refs, err
 }
 
 func proxyEnvList(p *pb.ProxyEnv) []string {

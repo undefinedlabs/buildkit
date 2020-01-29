@@ -24,7 +24,7 @@ import (
 // c := b.Copy(a.WithState(llb.Scratch().Dir("/ced")), "./foo", "./baz") // /abc/baz
 // llb.Image().Dir("/abc").File(c)
 //
-// In future this can be extended containerPort multiple outputs with:
+// In future this can be extended to multiple outputs with:
 // a := Mkdir("./foo")
 // b, id := a.GetSelector()
 // c := b.Mkdir("./bar")
