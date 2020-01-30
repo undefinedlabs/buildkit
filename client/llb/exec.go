@@ -390,31 +390,7 @@ type ExecState struct {
 }
 
 func (e ExecState) Expose(dependency ExecState, opt ...ExposeOption) State {
-	/*s := dependency.State
-	ei := &ExecInfo{State: s}
-	if p := s.GetPlatform(); p != nil {
-		ei.Constraints.Platform = p
-	}
-
-	meta := Meta{
-		Args:       getArgs(ei.State),
-		Cwd:        getDir(ei.State),
-		Env:        getEnv(ei.State),
-		User:       getUser(ei.State),
-		ProxyEnv:   ei.ProxyEnv,
-		ExtraHosts: getExtraHosts(ei.State),
-		Network:    getNetwork(ei.State),
-		Security:   getSecurity(ei.State),
-	}
-
-	exec := NewExecOp(s.Output(), meta, ei.ReadonlyRootFS, ei.Constraints)
-	for _, m := range ei.Mounts {
-		exec.AddMount(m.Target, m.Source, m.Opts...)
-	}
-	exec.secrets = ei.Secrets
-	exec.ssh = ei.SSH
-
-	e.exec.dependencies = append(e.exec.dependencies, exec)*/
+	e.exec.dependencies = append(e.exec.dependencies, dependency.exec)
 	return e.State
 }
 
