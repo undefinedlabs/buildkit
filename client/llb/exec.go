@@ -56,40 +56,16 @@ type mount struct {
 	noOutput     bool
 }
 
-type container struct {
-	source  Output
-	output  Output
-	portMap *PortMap
-}
-
-type PortMap struct {
-	hostPort      int64
-	containerPort int64
-}
-
 type ExecOp struct {
 	MarshalCache
-	root        Output
-	mounts      []*mount
-	meta        Meta
-	constraints Constraints
-	isValidated bool
-	secrets     []SecretInfo
-	ssh         []SSHInfo
-	containers  []*container
-}
-
-func (e *ExecOp) Expose(source Output, opt ...ExposeOption) Output {
-	ctr := &container{
-		source: source,
-	}
-
-	for _, o := range opt {
-		o(ctr)
-	}
-
-	ctr.output = source
-	return ctr.output
+	root         Output
+	mounts       []*mount
+	meta         Meta
+	constraints  Constraints
+	isValidated  bool
+	secrets      []SecretInfo
+	ssh          []SSHInfo
+	dependencies []*ExecOp
 }
 
 func (e *ExecOp) AddMount(target string, source Output, opt ...MountOption) Output {
@@ -145,11 +121,10 @@ func (e *ExecOp) Validate() error {
 			}
 		}
 	}
-	for _, ctr := range e.containers {
-		if ctr.source != nil {
-			if err := ctr.source.Vertex().Validate(); err != nil {
-				return err
-			}
+
+	for _, dep := range e.dependencies {
+		if err := dep.Validate(); err != nil {
+			return err
 		}
 	}
 	e.isValidated = true
@@ -395,20 +370,36 @@ type ExecState struct {
 	exec *ExecOp
 }
 
-func (e ExecState) Expose(source State, opt ...ExposeOption) State {
-	return source.WithOutput(e.exec.Expose(source.Output(), opt...))
-}
-
-type ExposeOption func(*container)
-
-func PortMapping(hostPort int64, containerPort int64) ExposeOption {
-	return func(ctr *container) {
-		ctr.portMap = &PortMap{
-			hostPort:      hostPort,
-			containerPort: containerPort,
-		}
+func (e ExecState) Expose(dependency ExecState, opt ...ExposeOption) State {
+	s := dependency.State
+	ei := &ExecInfo{State: s}
+	if p := s.GetPlatform(); p != nil {
+		ei.Constraints.Platform = p
 	}
+
+	meta := Meta{
+		Args:       getArgs(ei.State),
+		Cwd:        getDir(ei.State),
+		Env:        getEnv(ei.State),
+		User:       getUser(ei.State),
+		ProxyEnv:   ei.ProxyEnv,
+		ExtraHosts: getExtraHosts(ei.State),
+		Network:    getNetwork(ei.State),
+		Security:   getSecurity(ei.State),
+	}
+
+	exec := NewExecOp(s.Output(), meta, ei.ReadonlyRootFS, ei.Constraints)
+	for _, m := range ei.Mounts {
+		exec.AddMount(m.Target, m.Source, m.Opts...)
+	}
+	exec.secrets = ei.Secrets
+	exec.ssh = ei.SSH
+
+	e.exec.dependencies = append(e.exec.dependencies, exec)
+	return e.State
 }
+
+type ExposeOption func(*ExposeInfo)
 
 func (e ExecState) AddMount(target string, source State, opt ...MountOption) State {
 	return source.WithOutput(e.exec.AddMount(target, source.Output(), opt...))
@@ -656,6 +647,9 @@ func WithProxy(ps ProxyEnv) RunOption {
 	return runOptionFunc(func(ei *ExecInfo) {
 		ei.ProxyEnv = &ps
 	})
+}
+
+type ExposeInfo struct {
 }
 
 type ExecInfo struct {
