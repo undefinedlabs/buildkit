@@ -314,6 +314,12 @@ func (e *ExecOp) marshal(c *Constraints) (*pb.Op, *pb.OpMetadata, error) {
 	}
 
 	for _, dep := range e.dependencies {
+		for _, m := range e.mounts {
+			s := m.source.Vertex().(*SourceOp)
+			depSourceOp, _ := s.ToPbOp(c)
+			peo.Dependencies = append(peo.Dependencies, depSourceOp)
+		}
+
 		depOp, _, err := dep.marshal(c)
 		if err != nil {
 			return nil, nil, err

@@ -44,14 +44,7 @@ func (s *SourceOp) Validate() error {
 	return nil
 }
 
-func (s *SourceOp) Marshal(constraints *Constraints) (digest.Digest, []byte, *pb.OpMetadata, error) {
-	if s.Cached(constraints) {
-		return s.Load()
-	}
-	if err := s.Validate(); err != nil {
-		return "", nil, nil, err
-	}
-
+func (s *SourceOp) ToPbOp(constraints *Constraints) (*pb.Op, *pb.OpMetadata) {
 	if strings.HasPrefix(s.id, "local://") {
 		if _, hasSession := s.attrs[pb.AttrLocalSessionID]; !hasSession {
 			uid := s.constraints.LocalUniqueID
@@ -71,6 +64,19 @@ func (s *SourceOp) Marshal(constraints *Constraints) (digest.Digest, []byte, *pb
 	if !platformSpecificSource(s.id) {
 		proto.Platform = nil
 	}
+
+	return proto, md
+}
+
+func (s *SourceOp) Marshal(constraints *Constraints) (digest.Digest, []byte, *pb.OpMetadata, error) {
+	if s.Cached(constraints) {
+		return s.Load()
+	}
+	if err := s.Validate(); err != nil {
+		return "", nil, nil, err
+	}
+
+	proto, md := s.ToPbOp(constraints)
 
 	dt, err := proto.Marshal()
 	if err != nil {
