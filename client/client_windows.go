@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Microsoft/go-winio"
 	"github.com/pkg/errors"
 )
 

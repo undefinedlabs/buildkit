@@ -131,13 +131,7 @@ func (e *ExecOp) Validate() error {
 	return nil
 }
 
-func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata, error) {
-	if e.Cached(c) {
-		return e.Load()
-	}
-	if err := e.Validate(); err != nil {
-		return "", nil, nil, err
-	}
+func (e *ExecOp) marshal(c *Constraints) (*pb.Op, *pb.OpMetadata, error) {
 	// make sure mounts are sorted
 	sort.Slice(e.mounts, func(i, j int) bool {
 		return e.mounts[i].target < e.mounts[j].target
@@ -232,11 +226,11 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 		inputIndex := pb.InputIndex(len(pop.Inputs))
 		if m.source != nil {
 			if m.tmpfs {
-				return "", nil, nil, errors.Errorf("tmpfs mounts must use scratch")
+				return nil, nil, errors.Errorf("tmpfs mounts must use scratch")
 			}
 			inp, err := m.source.ToInput(c)
 			if err != nil {
-				return "", nil, nil, err
+				return nil, nil, err
 			}
 
 			newInput := true
@@ -319,6 +313,31 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 		peo.Mounts = append(peo.Mounts, pm)
 	}
 
+	for _, dep := range e.dependencies {
+		depOp, _, err := dep.marshal(c)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		peo.Dependencies = append(peo.Dependencies, depOp)
+	}
+
+	return pop, md, nil
+}
+
+func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata, error) {
+	if e.Cached(c) {
+		return e.Load()
+	}
+	if err := e.Validate(); err != nil {
+		return "", nil, nil, err
+	}
+
+	pop, md, err := e.marshal(c)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
 	dt, err := pop.Marshal()
 	if err != nil {
 		return "", nil, nil, err
@@ -371,7 +390,7 @@ type ExecState struct {
 }
 
 func (e ExecState) Expose(dependency ExecState, opt ...ExposeOption) State {
-	s := dependency.State
+	/*s := dependency.State
 	ei := &ExecInfo{State: s}
 	if p := s.GetPlatform(); p != nil {
 		ei.Constraints.Platform = p
@@ -395,7 +414,7 @@ func (e ExecState) Expose(dependency ExecState, opt ...ExposeOption) State {
 	exec.secrets = ei.Secrets
 	exec.ssh = ei.SSH
 
-	e.exec.dependencies = append(e.exec.dependencies, exec)
+	e.exec.dependencies = append(e.exec.dependencies, exec)*/
 	return e.State
 }
 

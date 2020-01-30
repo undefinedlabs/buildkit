@@ -73,13 +73,13 @@ func NewExecOp(v solver.Vertex, op *pb.Op_Exec, platform *pb.Platform, cm cache.
 	}
 
 	var deps []*execOp
-	for _, dep := range op.Exec.Dependencies {
+	/*	for _, dep := range op.Exec.Dependencies {
 		depOp, err := NewExecOp(v, &pb.Op_Exec{Exec: dep}, platform, cm, sm, md, exec, w)
 		if err != nil {
 			return nil, err
 		}
 		deps = append(deps, depOp.(*execOp))
-	}
+	}*/
 
 	return &execOp{
 		op:           op.Exec,
