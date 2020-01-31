@@ -278,43 +278,10 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 		for {
 			select {
 			case <-ctx.Done():
-				killCtx, timeout := context.WithTimeout(context.Background(), 7*time.Second)
-				if err := w.runc.Kill(killCtx, id, int(syscall.SIGKILL), nil); err != nil {
-					logrus.Errorf("failed to kill runc %s: %+v", id, err)
-					select {
-					case <-killCtx.Done():
-						timeout()
-						cancelRun()
-						return
-					default:
-					}
-				}
-				timeout()
-				select {
-				case <-time.After(50 * time.Millisecond):
-				case <-done:
-					return
-				}
+				w.killContainer(id, done, cancelRun)
 			case <-done:
 				if execData.ErrorRun == nil && execData.CtrStatus == "running" {
-					killCtx, timeout := context.WithTimeout(context.Background(), 7*time.Second)
-					if err := w.runc.Kill(killCtx, id, int(syscall.SIGKILL), nil); err != nil {
-						logrus.Errorf("failed to kill runc %s: %+v", id, err)
-						select {
-						case <-killCtx.Done():
-							timeout()
-							cancelRun()
-							return
-						default:
-						}
-					}
-					timeout()
-					select {
-					case <-time.After(50 * time.Millisecond):
-					case <-done:
-						return
-					}
-
+					w.killContainer(id, done, cancelRun)
 				}
 				return
 			}
@@ -422,6 +389,26 @@ func (w *runcExecutor) ExecEnd(ctx context.Context, execData *executor.ExecData)
 	if !execData.HasFinished {
 		close(execData.DoneRun)
 		execData.HasFinished = true
+	}
+}
+
+func (w *runcExecutor) killContainer(id string, done chan struct{}, cancelRun func()) {
+	killCtx, timeout := context.WithTimeout(context.Background(), 7*time.Second)
+	if err := w.runc.Kill(killCtx, id, int(syscall.SIGKILL), nil); err != nil {
+		logrus.Errorf("failed to kill runc %s: %+v", id, err)
+		select {
+		case <-killCtx.Done():
+			timeout()
+			cancelRun()
+			return
+		default:
+		}
+	}
+	timeout()
+	select {
+	case <-time.After(50 * time.Millisecond):
+	case <-done:
+		return
 	}
 }
 

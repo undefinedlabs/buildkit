@@ -3,7 +3,6 @@ package oci
 import (
 	"context"
 	"errors"
-	"github.com/opencontainers/runtime-spec/specs-go"
 	"os"
 	"strconv"
 	"strings"

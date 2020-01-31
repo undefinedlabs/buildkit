@@ -721,10 +721,6 @@ func (e *execOp) execStart(ctx context.Context, inputs []solver.Result) error {
 
 	e.stdout, e.stderr = logs.NewLogStreams(ctx, os.Getenv("BUILDKIT_DEBUG_EXEC_OUTPUT") == "1")
 
-	/*	if err := e.exec.Exec(ctx, meta, root, mounts, nil, e.stdout, e.stderr); err != nil {
-		return errors.Wrapf(err, "executor failed running %v", meta.Args)
-	}*/
-
 	execData, err := e.exec.ExecStart(ctx, meta, root, mounts, nil, e.stdout, e.stderr)
 	e.execData = execData
 	if err != nil {
@@ -777,7 +773,7 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 			err := dep.execStart(ctx, inputs)
 			if err != nil {
 				dep.execEnd(ctx)
-				return nil, err //TODO
+				return nil, err
 			}
 		}
 	}
