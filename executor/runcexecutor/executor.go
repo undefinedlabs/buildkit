@@ -137,7 +137,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 	}
 
 	execData.Namespace = namespace
-	//defer namespace.Close()
 
 	if meta.NetMode == pb.NetMode_HOST {
 		logrus.Info("enabling HostNetworking")
@@ -154,7 +153,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 	}
 	if clean != nil {
 		execData.HostFileClean = clean
-		//defer clean()
 	}
 
 	mountable, err := root.Mount(ctx, false)
@@ -168,7 +166,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 	}
 	if release != nil {
 		execData.MountRelease = release
-		//defer release()
 	}
 
 	id := identity.NewID()
@@ -178,7 +175,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 		return execData, err
 	}
 	execData.Bundle = bundle
-	//defer os.RemoveAll(bundle)
 
 	identity := idtools.Identity{}
 	if w.idmap != nil {
@@ -193,7 +189,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 		return execData, err
 	}
 	execData.RootFSPath = rootFSPath
-	//defer mount.Unmount(rootFSPath, 0)
 
 	uid, gid, sgids, err := oci.GetUser(ctx, rootFSPath, meta.User)
 	if err != nil {
@@ -205,7 +200,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 		return execData, err
 	}
 	execData.ConfigJson = f
-	//defer f.Close()
 
 	opts := []containerdoci.SpecOpts{oci.WithUIDGID(uid, gid, sgids)}
 
@@ -239,7 +233,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 		return execData, err
 	}
 	execData.SpecCleanup = cleanup
-	//defer cleanup()
 
 	spec.Root.Path = rootFSPath
 	if _, ok := root.(cache.ImmutableRef); ok { // TODO: pass in with mount, not ref type
@@ -270,7 +263,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 	// runCtx/killCtx is used for extra check in case the kill command blocks
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	execData.CancelRun = cancelRun
-	//defer cancelRun()
 
 	done := make(chan struct{})
 	execData.DoneRun = done
@@ -335,8 +327,6 @@ func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root c
 			break
 		}
 	}
-
-	//close(done)
 
 	if status != 0 || err != nil {
 		if err == nil {
