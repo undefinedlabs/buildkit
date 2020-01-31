@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/containerd/containerd/mount"
 	containerdoci "github.com/containerd/containerd/oci"
 	"github.com/containerd/continuity/fs"
@@ -122,16 +124,19 @@ func New(opt Opt, networkProviders map[pb.NetMode]network.Provider) (executor.Ex
 	return w, nil
 }
 
-func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.Mountable, mounts []executor.Mount, stdin io.ReadCloser, stdout, stderr io.WriteCloser) error {
+func (w *runcExecutor) ExecStart(ctx context.Context, meta executor.Meta, root cache.Mountable, mounts []executor.Mount, stdin io.ReadCloser, stdout, stderr io.WriteCloser) (*executor.ExecData, error) {
+	execData := &executor.ExecData{}
+
 	provider, ok := w.networkProviders[meta.NetMode]
 	if !ok {
-		return errors.Errorf("unknown network mode %s", meta.NetMode)
+		return nil, errors.Errorf("unknown network mode %s", meta.NetMode)
 	}
 	namespace, err := provider.New()
 	if err != nil {
-		return err
+		return execData, err
 	}
-	defer namespace.Close()
+
+	execData.Namespace = namespace
 
 	if meta.NetMode == pb.NetMode_HOST {
 		logrus.Info("enabling HostNetworking")
@@ -139,37 +144,37 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 
 	resolvConf, err := oci.GetResolvConf(ctx, w.root, w.idmap, w.dns)
 	if err != nil {
-		return err
+		return execData, err
 	}
 
 	hostsFile, clean, err := oci.GetHostsFile(ctx, w.root, meta.ExtraHosts, w.idmap)
 	if err != nil {
-		return err
+		return execData, err
 	}
 	if clean != nil {
-		defer clean()
+		execData.HostFileClean = clean
 	}
 
 	mountable, err := root.Mount(ctx, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	rootMount, release, err := mountable.Mount()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if release != nil {
-		defer release()
+		execData.MountRelease = release
 	}
 
 	id := identity.NewID()
 	bundle := filepath.Join(w.root, id)
 
 	if err := os.Mkdir(bundle, 0711); err != nil {
-		return err
+		return execData, err
 	}
-	defer os.RemoveAll(bundle)
+	execData.Bundle = bundle
 
 	identity := idtools.Identity{}
 	if w.idmap != nil {
@@ -178,23 +183,23 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 
 	rootFSPath := filepath.Join(bundle, "rootfs")
 	if err := idtools.MkdirAllAndChown(rootFSPath, 0700, identity); err != nil {
-		return err
+		return execData, err
 	}
 	if err := mount.All(rootMount, rootFSPath); err != nil {
-		return err
+		return execData, err
 	}
-	defer mount.Unmount(rootFSPath, 0)
+	execData.RootFSPath = rootFSPath
 
 	uid, gid, sgids, err := oci.GetUser(ctx, rootFSPath, meta.User)
 	if err != nil {
-		return err
+		return execData, err
 	}
 
 	f, err := os.Create(filepath.Join(bundle, "config.json"))
 	if err != nil {
-		return err
+		return execData, err
 	}
-	defer f.Close()
+	execData.ConfigJson = f
 
 	opts := []containerdoci.SpecOpts{oci.WithUIDGID(uid, gid, sgids)}
 
@@ -209,7 +214,7 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 	if w.idmap != nil {
 		identity, err = w.idmap.ToHost(identity)
 		if err != nil {
-			return err
+			return execData, err
 		}
 	}
 
@@ -225,9 +230,9 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 	}
 	spec, cleanup, err := oci.GenerateSpec(ctx, meta, mounts, id, resolvConf, hostsFile, namespace, w.processMode, w.idmap, opts...)
 	if err != nil {
-		return err
+		return execData, err
 	}
-	defer cleanup()
+	execData.SpecCleanup = cleanup
 
 	spec.Root.Path = rootFSPath
 	if _, ok := root.(cache.ImmutableRef); ok { // TODO: pass in with mount, not ref type
@@ -236,63 +241,92 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 
 	newp, err := fs.RootPath(rootFSPath, meta.Cwd)
 	if err != nil {
-		return errors.Wrapf(err, "working dir %s points to invalid target", newp)
+		return execData, errors.Wrapf(err, "working dir %s points to invalid target", newp)
 	}
 	if _, err := os.Stat(newp); err != nil {
 		if err := idtools.MkdirAllAndChown(newp, 0755, identity); err != nil {
-			return errors.Wrapf(err, "failed to create working directory %s", newp)
+			return execData, errors.Wrapf(err, "failed to create working directory %s", newp)
 		}
 	}
 
 	spec.Process.OOMScoreAdj = w.oomScoreAdj
 	if w.rootless {
 		if err := rootlessspecconv.ToRootless(spec); err != nil {
-			return err
+			return execData, err
 		}
 	}
 
 	if err := json.NewEncoder(f).Encode(spec); err != nil {
-		return err
+		return execData, err
 	}
 
 	// runCtx/killCtx is used for extra check in case the kill command blocks
 	runCtx, cancelRun := context.WithCancel(context.Background())
-	defer cancelRun()
+	execData.CancelRun = cancelRun
 
 	done := make(chan struct{})
+	execData.DoneRun = done
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
-				killCtx, timeout := context.WithTimeout(context.Background(), 7*time.Second)
-				if err := w.runc.Kill(killCtx, id, int(syscall.SIGKILL), nil); err != nil {
-					logrus.Errorf("failed to kill runc %s: %+v", id, err)
-					select {
-					case <-killCtx.Done():
-						timeout()
-						cancelRun()
-						return
-					default:
-					}
-				}
-				timeout()
-				select {
-				case <-time.After(50 * time.Millisecond):
-				case <-done:
-					return
-				}
+				w.killContainer(id, done, cancelRun)
 			case <-done:
+				if execData.ErrorRun == nil && execData.CtrStatus == "running" {
+					w.killContainer(id, done, cancelRun)
+				}
 				return
 			}
 		}
 	}()
 
-	logrus.Debugf("> creating %s %v", id, meta.Args)
-	status, err := w.runc.Run(runCtx, id, bundle, &runc.CreateOpts{
-		IO:      &forwardIO{stdin: stdin, stdout: stdout, stderr: stderr},
-		NoPivot: w.noPivot,
+	eg, _ := errgroup.WithContext(context.Background())
+
+	var status int
+	eg.Go(func() error {
+		logrus.Debugf("> creating %s %v", id, meta.Args)
+		status, err = w.runc.Run(runCtx, id, bundle, &runc.CreateOpts{
+			IO:      &forwardIO{stdin: stdin, stdout: stdout, stderr: stderr},
+			NoPivot: w.noPivot,
+		})
+
+		execData.ErrorRun = err
+		if !execData.HasFinished {
+			close(done)
+			execData.HasFinished = true
+		}
+
+		if err != nil {
+			return err
+		}
+
+		return nil
 	})
-	close(done)
+
+	go func() {
+		err = eg.Wait()
+	}()
+
+	for {
+		if execData.HasFinished {
+			break
+		}
+
+		c, err := w.runc.State(ctx, id)
+		if c == nil {
+			continue
+		}
+		logrus.Debugf(">> container %s, Status: %s", id, c.Status)
+		if err != nil {
+			logrus.Debugf(">> container %s, Error: %v", id, err)
+			break
+		}
+
+		execData.CtrStatus = c.Status
+		if c.Status == "running" || c.Status == "stopped" {
+			break
+		}
+	}
 
 	if status != 0 || err != nil {
 		if err == nil {
@@ -300,10 +334,80 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 		}
 		select {
 		case <-ctx.Done():
-			return errors.Wrapf(ctx.Err(), err.Error())
+			return execData, errors.Wrapf(ctx.Err(), err.Error())
 		default:
-			return err
+			return execData, err
 		}
+	}
+
+	return execData, nil
+}
+
+func (w *runcExecutor) ExecEnd(ctx context.Context, execData *executor.ExecData) {
+	if execData.Namespace != nil {
+		defer execData.Namespace.Close()
+	}
+
+	if execData.HostFileClean != nil {
+		defer execData.HostFileClean()
+	}
+
+	if execData.MountRelease != nil {
+		defer execData.MountRelease()
+	}
+
+	if execData.Bundle != "" {
+		defer os.RemoveAll(execData.Bundle)
+	}
+
+	if execData.RootFSPath != "" {
+		defer mount.Unmount(execData.RootFSPath, 0)
+	}
+
+	if execData.ConfigJson != nil {
+		defer execData.ConfigJson.Close()
+	}
+
+	if execData.SpecCleanup != nil {
+		defer execData.SpecCleanup()
+	}
+
+	if execData.CancelRun != nil {
+		defer execData.CancelRun()
+	}
+
+	if !execData.HasFinished {
+		close(execData.DoneRun)
+		execData.HasFinished = true
+	}
+}
+
+func (w *runcExecutor) killContainer(id string, done chan struct{}, cancelRun func()) {
+	killCtx, timeout := context.WithTimeout(context.Background(), 7*time.Second)
+	if err := w.runc.Kill(killCtx, id, int(syscall.SIGKILL), nil); err != nil {
+		logrus.Errorf("failed to kill runc %s: %+v", id, err)
+		select {
+		case <-killCtx.Done():
+			timeout()
+			cancelRun()
+			return
+		default:
+		}
+	}
+	timeout()
+	select {
+	case <-time.After(50 * time.Millisecond):
+	case <-done:
+		return
+	}
+}
+
+func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.Mountable, mounts []executor.Mount, stdin io.ReadCloser, stdout, stderr io.WriteCloser) error {
+	execData, err := w.ExecStart(ctx, meta, root, mounts, stdin, stdout, stderr)
+
+	w.ExecEnd(ctx, execData)
+	if err != nil {
+		return err
 	}
 
 	return nil

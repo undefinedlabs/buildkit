@@ -58,13 +58,14 @@ type mount struct {
 
 type ExecOp struct {
 	MarshalCache
-	root        Output
-	mounts      []*mount
-	meta        Meta
-	constraints Constraints
-	isValidated bool
-	secrets     []SecretInfo
-	ssh         []SSHInfo
+	root         Output
+	mounts       []*mount
+	meta         Meta
+	constraints  Constraints
+	isValidated  bool
+	secrets      []SecretInfo
+	ssh          []SSHInfo
+	dependencies []*ExecOp
 }
 
 func (e *ExecOp) AddMount(target string, source Output, opt ...MountOption) Output {
@@ -120,17 +121,17 @@ func (e *ExecOp) Validate() error {
 			}
 		}
 	}
+
+	for _, dep := range e.dependencies {
+		if err := dep.Validate(); err != nil {
+			return err
+		}
+	}
 	e.isValidated = true
 	return nil
 }
 
-func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata, error) {
-	if e.Cached(c) {
-		return e.Load()
-	}
-	if err := e.Validate(); err != nil {
-		return "", nil, nil, err
-	}
+func (e *ExecOp) marshal(c *Constraints) (*pb.Op, *pb.OpMetadata, error) {
 	// make sure mounts are sorted
 	sort.Slice(e.mounts, func(i, j int) bool {
 		return e.mounts[i].target < e.mounts[j].target
@@ -225,11 +226,11 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 		inputIndex := pb.InputIndex(len(pop.Inputs))
 		if m.source != nil {
 			if m.tmpfs {
-				return "", nil, nil, errors.Errorf("tmpfs mounts must use scratch")
+				return nil, nil, errors.Errorf("tmpfs mounts must use scratch")
 			}
 			inp, err := m.source.ToInput(c)
 			if err != nil {
-				return "", nil, nil, err
+				return nil, nil, err
 			}
 
 			newInput := true
@@ -312,6 +313,31 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 		peo.Mounts = append(peo.Mounts, pm)
 	}
 
+	for _, dep := range e.dependencies {
+		depOp, _, err := dep.marshal(c)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		peo.Dependencies = append(peo.Dependencies, depOp)
+	}
+
+	return pop, md, nil
+}
+
+func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata, error) {
+	if e.Cached(c) {
+		return e.Load()
+	}
+	if err := e.Validate(); err != nil {
+		return "", nil, nil, err
+	}
+
+	pop, md, err := e.marshal(c)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
 	dt, err := pop.Marshal()
 	if err != nil {
 		return "", nil, nil, err
@@ -333,6 +359,19 @@ func (e *ExecOp) Inputs() (inputs []Output) {
 	}
 	for o := range mm {
 		inputs = append(inputs, o)
+	}
+
+	if e.dependencies != nil {
+		for _, dep := range e.dependencies {
+			for _, m := range dep.mounts {
+				if m.source != nil {
+					mm[m.source] = struct{}{}
+				}
+			}
+			for o := range mm {
+				inputs = append(inputs, o)
+			}
+		}
 	}
 	return
 }
@@ -362,6 +401,13 @@ type ExecState struct {
 	State
 	exec *ExecOp
 }
+
+func (e ExecState) Expose(dependency ExecState, opt ...ExposeOption) State {
+	e.exec.dependencies = append(e.exec.dependencies, dependency.exec)
+	return e.State
+}
+
+type ExposeOption func(*ExposeInfo)
 
 func (e ExecState) AddMount(target string, source State, opt ...MountOption) State {
 	return source.WithOutput(e.exec.AddMount(target, source.Output(), opt...))
@@ -609,6 +655,9 @@ func WithProxy(ps ProxyEnv) RunOption {
 	return runOptionFunc(func(ei *ExecInfo) {
 		ei.ProxyEnv = &ps
 	})
+}
+
+type ExposeInfo struct {
 }
 
 type ExecInfo struct {

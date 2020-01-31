@@ -71,6 +71,7 @@ func TestIntegration(t *testing.T) {
 		testBuildPushAndValidate,
 		testBuildExportWithUncompressed,
 		testResolveAndHosts,
+		//testExpose,
 		testUser,
 		testOCIExporter,
 		testWhiteoutParentDir,
@@ -1270,6 +1271,23 @@ func testResolveAndHosts(t *testing.T, sb integration.Sandbox) {
 	require.NoError(t, err)
 	require.Contains(t, string(dt), "127.0.0.1	localhost")
 
+}
+
+//TODO undefinedlabs
+func testExpose(t *testing.T, sb integration.Sandbox) {
+	c, err := New(context.TODO(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	st := llb.Image("busybox:latest").Run(llb.Shlex(`sh -c "wget localhost:10080"`))
+	st.Expose(llb.Image("busybox:latest").Run(llb.Shlex(`sh -c "busybox httpd"`)).Root(), llb.PortMapping(10080, 80))
+
+	def, err := st.Marshal()
+	require.NoError(t, err)
+
+	_ = def
+
+	//TODO
 }
 
 func testUser(t *testing.T, sb integration.Sandbox) {
