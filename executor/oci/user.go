@@ -3,6 +3,7 @@ package oci
 import (
 	"context"
 	"errors"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"os"
 	"strconv"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	containerdoci "github.com/containerd/containerd/oci"
 	"github.com/containerd/continuity/fs"
 	"github.com/opencontainers/runc/libcontainer/user"
-	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 func GetUser(ctx context.Context, root, username string) (uint32, uint32, []uint32, error) {

@@ -48,6 +48,14 @@ func New(client *containerd.Client, root, cgroup string, networkProviders map[pb
 	}
 }
 
+func (w containerdExecutor) ExecStart(ctx context.Context, meta executor.Meta, root cache.Mountable, mounts []executor.Mount, stdin io.ReadCloser, stdout, stderr io.WriteCloser) (*executor.ExecData, error) {
+	return nil, nil
+}
+
+func (w containerdExecutor) ExecEnd(ctx context.Context, execData *executor.ExecData) {
+
+}
+
 func (w containerdExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.Mountable, mounts []executor.Mount, stdin io.ReadCloser, stdout, stderr io.WriteCloser) (err error) {
 	id := identity.NewID()
 
