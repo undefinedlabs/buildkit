@@ -366,6 +366,19 @@ func (e *ExecOp) Inputs() (inputs []Output) {
 	for o := range mm {
 		inputs = append(inputs, o)
 	}
+
+	if e.dependencies != nil {
+		for _, dep := range e.dependencies {
+			for _, m := range dep.mounts {
+				if m.source != nil {
+					mm[m.source] = struct{}{}
+				}
+			}
+			for o := range mm {
+				inputs = append(inputs, o)
+			}
+		}
+	}
 	return
 }
 
