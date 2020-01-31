@@ -73,13 +73,21 @@ func NewExecOp(v solver.Vertex, op *pb.Op_Exec, platform *pb.Platform, cm cache.
 	}
 
 	var deps []*execOp
-	/*	for _, dep := range op.Exec.Dependencies {
-		depOp, err := NewExecOp(v, &pb.Op_Exec{Exec: dep}, platform, cm, sm, md, exec, w)
-		if err != nil {
-			return nil, err
+	for _, dep := range op.Exec.Dependencies {
+		depOp := &execOp{
+			op:          dep.GetExec(),
+			cm:          cm,
+			sm:          sm,
+			md:          md,
+			exec:        exec,
+			w:           w,
+			platform:    platform,
+			numInputs:   len(dep.Inputs),
+			cacheMounts: map[string]*cacheRefShare{},
 		}
-		deps = append(deps, depOp.(*execOp))
-	}*/
+
+		deps = append(deps, depOp)
+	}
 
 	return &execOp{
 		op:           op.Exec,
@@ -756,8 +764,7 @@ func (e *execOp) Exec(ctx context.Context, inputs []solver.Result) ([]solver.Res
 	//Setup dependencies
 	if e.dependencies != nil {
 		for _, dep := range e.dependencies {
-			var depResults []solver.Result
-			err := dep.execStart(ctx, depResults)
+			err := dep.execStart(ctx, inputs)
 			if err != nil {
 				return nil, err //TODO
 			}
